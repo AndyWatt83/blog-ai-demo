@@ -1,0 +1,509 @@
+@page "/"
+@page "/blog-editor"
+@using BlazorOpenAiDemo.Models
+@using BlazorOpenAiDemo.Services
+@using System.Runtime.CompilerServices
+@inject IJSRuntime JSRuntime
+@inject GenerateBlogContentCommand ContentGenerator
+@inject StreamBlogContentCommand StreamingContentGenerator
+@inject GenerateImageCommand ImageGenerator
+@inject GenerateSpeechCommand SpeechGenerator
+@inject FeatureFlags Features
+@inject DemoController DemoController
+@rendermode InteractiveServer
+
+<PageTitle>AI-Enhanced Blog Editor</PageTitle>
+
+<style>
+    .blog-content {
+        font-family: 'Georgia', serif;
+        line-height: 1.6;
+    }
+    
+    .card {
+        box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+    }
+    
+    .preview-card {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+    }
+    
+    .preview-card .card-body {
+        flex: 1;
+    }
+    
+    .demo-controls {
+        position: fixed;
+        bottom: 20px;
+        right: 20px;
+        z-index: 1000;
+        display: flex;
+        gap: 10px;
+    }
+    
+    .demo-step-indicator {
+        padding: 5px 10px;
+        background-color: #f8f9fa;
+        border-radius: 4px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        margin-right: 10px;
+        line-height: 32px;
+    }
+</style>
+
+<div class="container mt-4">
+    <h1>AI-Enhanced Blog Editor</h1>
+    
+    <!-- Demo controls -->
+    <div class="demo-controls">
+        <div class="demo-step-indicator">
+            <strong>@DemoController.GetCurrentStepLabel()</strong>
+        </div>
+        <button class="btn btn-secondary" @onclick="PreviousStep" disabled="@(!DemoController.HasPrevious)">
+            &laquo; Previous
+        </button>
+        <button class="btn btn-primary" @onclick="NextStep" disabled="@(!DemoController.HasNext)">
+            Next &raquo;
+        </button>
+    </div>
+    
+    <div class="row">
+        <div class="col-md-6">
+            <div class="mb-3">
+                <label for="blogTitle" class="form-label">Title</label>
+                <div class="input-group">
+                    <input type="text" class="form-control" id="blogTitle" @oninput="UpdateTitle" value="@title" />
+                    @if (Features.EnableStandardContentGeneration)
+                    {
+                        <button class="btn btn-success" type="button" @onclick="GenerateContent" disabled="@(string.IsNullOrWhiteSpace(title) || isGeneratingContent || isStreamingContent)">
+                            @if (isGeneratingContent)
+                            {
+                                <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                                <span class="ms-1">Generating...</span>
+                            }
+                            else
+                            {
+                                <span>Generate Content</span>
+                            }
+                        </button>
+                    }
+                    
+                    @if (Features.EnableStreamingContentGeneration)
+                    {
+                        <button class="btn btn-primary" type="button" @onclick="StreamContent" disabled="@(string.IsNullOrWhiteSpace(title) || isGeneratingContent || isStreamingContent)">
+                            @if (isStreamingContent)
+                            {
+                                <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                                <span class="ms-1">Streaming...</span>
+                            }
+                            else
+                            {
+                                <span>Stream Content</span>
+                            }
+                        </button>
+                    }
+                </div>
+            </div>
+            
+            <div class="mb-3">
+                <label for="headerImage" class="form-label">Header Image</label>
+                <div class="input-group">
+                    <InputFile OnChange="@LoadImage" class="form-control" accept="image/*" />
+                    @if (Features.EnableImageGeneration)
+                    {
+                        <button class="btn btn-warning" type="button" @onclick="GenerateImage" disabled="@(string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(content) || isGeneratingImage || isGeneratingContent || isStreamingContent)">
+                            @if (isGeneratingImage)
+                            {
+                                <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                                <span class="ms-1">Generating...</span>
+                            }
+                            else
+                            {
+                                <span>Generate Image</span>
+                            }
+                        </button>
+                    }
+                </div>
+                <div class="d-flex justify-content-between mt-1">
+                    <small class="text-muted">Recommended: Images smaller than 1MB</small>
+                    @if (isLoading)
+                    {
+                        <div class="spinner-border spinner-border-sm text-primary" role="status">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
+                    }
+                </div>
+                @if (!string.IsNullOrEmpty(errorMessage))
+                {
+                    <div class="text-danger mt-1">@errorMessage</div>
+                }
+            </div>
+            
+            <div class="mb-3">
+                <label for="blogContent" class="form-label">Content</label>
+                <div class="d-flex mb-2">
+                    <small class="text-muted">Basic HTML tags are supported</small>
+                </div>
+                <textarea class="form-control" id="blogContent" rows="15" @oninput="UpdateContent" value="@content" placeholder="Write your blog content here..."></textarea>
+                
+                <!-- Generate Audio button -->
+                @if (Features.EnableSpeechGeneration)
+                {
+                    <div class="mt-2">
+                        <button class="btn btn-info" type="button" @onclick="GenerateAudio" disabled="@(string.IsNullOrWhiteSpace(content) || isGeneratingAudio || isGeneratingContent || isStreamingContent)">
+                            @if (isGeneratingAudio)
+                            {
+                                <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                                <span class="ms-1">Generating Audio...</span>
+                            }
+                            else
+                            {
+                                <span>Generate Audio</span>
+                            }
+                        </button>
+                    </div>
+                }
+            </div>
+        </div>
+        
+        <div class="col-md-6">
+            <div class="card preview-card">
+                <div class="card-header bg-primary text-white">
+                    <h5 class="mb-0">Blog Preview</h5>
+                </div>
+                
+                @if (!string.IsNullOrEmpty(headerImageUrl))
+                {
+                    <img src="@headerImageUrl" class="card-img-top" alt="Header image" style="max-height: 250px; object-fit: cover;" />
+                }
+                else
+                {
+                    <div class="text-center bg-light py-5">
+                        <span class="text-muted">Header image will appear here</span>
+                    </div>
+                }
+                
+                <div class="card-body">
+                    @if (string.IsNullOrEmpty(title))
+                    {
+                        <h2 class="text-muted">Your Blog Title</h2>
+                    }
+                    else
+                    {
+                        <h2>@title</h2>
+                    }
+                    
+                    <!-- Audio player container (initially hidden) -->
+                    <div id="audioPlayerContainer" style="display: @(audioAvailable ? "block" : "none");" class="mt-2 mb-3">
+                        <!-- Audio player will be injected here via JS -->
+                    </div>
+                    
+                    <hr />
+                    
+                    <div class="mt-3 blog-content">
+                        @if (string.IsNullOrEmpty(content))
+                        {
+                            <p class="text-muted">Your blog content will appear here...</p>
+                        }
+                        else
+                        {
+                            @((MarkupString)content)
+                        }
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+@code {
+    private string title = string.Empty;
+    private string content = string.Empty;
+    private string headerImageUrl = string.Empty;
+    private string errorMessage = string.Empty;
+    private bool isLoading = false;
+    private bool isGeneratingContent = false;
+    private bool isStreamingContent = false;
+    private bool isGeneratingImage = false;
+    private bool isGeneratingAudio = false;
+    private bool audioAvailable = false;
+    private string audioElementId = "blogAudioPlayer";
+    private string streamingBuffer = string.Empty;
+    private const long MaxFileSize = 1024 * 1024 * 2; // 2MB
+    
+    // No need for OnInitialized anymore
+    
+    // Handle Next button click
+    private void NextStep()
+    {
+        DemoController.Next();
+        StateHasChanged();
+    }
+    
+    // Handle Previous button click
+    private void PreviousStep()
+    {
+        DemoController.Previous();
+        StateHasChanged();
+    }
+    
+    private void UpdateTitle(ChangeEventArgs e)
+    {
+        title = e.Value?.ToString() ?? string.Empty;
+    }
+    
+    private async Task UpdateContent(ChangeEventArgs e)
+    {
+        var newContent = e.Value?.ToString() ?? string.Empty;
+        
+        // If content changes significantly and we have audio, reset the audio player
+        if (audioAvailable && Math.Abs(newContent.Length - content.Length) > 50)
+        {
+            await JSRuntime.InvokeVoidAsync("hideAudioPlayer", audioElementId);
+            audioAvailable = false;
+        }
+        
+        content = newContent;
+    }
+
+    private async Task LoadImage(InputFileChangeEventArgs e)
+    {
+        errorMessage = string.Empty;
+        isLoading = true;
+        StateHasChanged(); // Show loading indicator
+        
+        try
+        {
+            var file = e.File;
+
+            if (file.Size > MaxFileSize)
+            {
+                errorMessage = "The file is too large. Maximum size is 2MB.";
+                isLoading = false;
+                StateHasChanged();
+                return;
+            }
+
+            // For demo purposes, we'll use a data URL but with stream optimization
+            using var stream = file.OpenReadStream(MaxFileSize);
+            using var ms = new MemoryStream();
+            
+            // Copy in smaller chunks to avoid timeouts
+            await stream.CopyToAsync(ms);
+            ms.Seek(0, SeekOrigin.Begin);
+            
+            var imageBytes = ms.ToArray();
+            var base64 = Convert.ToBase64String(imageBytes);
+            var imageType = file.ContentType;
+            
+            headerImageUrl = $"data:{imageType};base64,{base64}";
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error uploading image: {ex.Message}";
+        }
+        finally
+        {
+            isLoading = false;
+            StateHasChanged(); // Update UI after processing
+        }
+    }
+    
+    // Method to create a BlogPost object from the current form values
+    private BlogPost CreateBlogPost()
+    {
+        return new BlogPost
+        {
+            Title = title,
+            Content = content,
+            HeaderImageUrl = headerImageUrl,
+            CreatedAt = DateTime.Now,
+            UpdatedAt = DateTime.Now
+        };
+    }
+    
+    // Generate blog content using OpenAI
+    private async Task GenerateContent()
+    {
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            return;
+        }
+        
+        try
+        {
+            isGeneratingContent = true;
+            errorMessage = string.Empty;
+            StateHasChanged();
+            
+            // Call the OpenAI service to generate content
+            content = await ContentGenerator.ExecuteAsync(title);
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error generating content: {ex.Message}";
+        }
+        finally
+        {
+            isGeneratingContent = false;
+            StateHasChanged();
+        }
+    }
+    
+    // Stream blog content with animated typing effect
+    private async Task StreamContent()
+    {
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            return;
+        }
+        
+        try
+        {
+            isStreamingContent = true;
+            errorMessage = string.Empty;
+            content = string.Empty;
+            streamingBuffer = string.Empty;
+            StateHasChanged();
+            
+            // Stream content token by token
+            try
+            {
+                await foreach (var token in StreamingContentGenerator.ExecuteAsync(title))
+                {
+                    // Handle potential null tokens (shouldn't happen with our fixes, but just in case)
+                    if (token == null) continue;
+                    
+                    // Append new token to the buffer
+                    streamingBuffer += token;
+                    
+                    // Update content with the current buffer
+                    content = streamingBuffer;
+                    
+                    // Update UI after each token
+                    StateHasChanged();
+                    
+                    // Optional: Add a tiny delay for a more natural typing effect
+                    await Task.Delay(10);
+                }
+            }
+            catch (Exception innerEx)
+            {
+                // Log nested exception for debugging
+                Console.WriteLine($"Inner streaming error: {innerEx.Message}");
+                errorMessage = $"Error during streaming: {innerEx.Message}";
+            }
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error streaming content: {ex.Message}";
+        }
+        finally
+        {
+            isStreamingContent = false;
+            StateHasChanged();
+        }
+    }
+    
+    // Generate header image using DALL-E
+    private async Task GenerateImage()
+    {
+        if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(content))
+        {
+            errorMessage = "Both title and content are required to generate an image";
+            return;
+        }
+        
+        try
+        {
+            isGeneratingImage = true;
+            errorMessage = string.Empty;
+            StateHasChanged();
+            
+            // Create the request with title and content
+            var request = new GenerateImageRequest
+            {
+                Title = title,
+                Content = content
+            };
+            
+            // Call the OpenAI service to generate image
+            var imageUrl = await ImageGenerator.ExecuteAsync(request);
+            
+            if (!string.IsNullOrEmpty(imageUrl))
+            {
+                headerImageUrl = imageUrl;
+            }
+            else
+            {
+                errorMessage = "Failed to generate image. Please try again.";
+            }
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error generating image: {ex.Message}";
+        }
+        finally
+        {
+            isGeneratingImage = false;
+            StateHasChanged();
+        }
+    }
+    
+    // Generate audio using OpenAI TTS
+    private async Task GenerateAudio()
+    {
+        if (string.IsNullOrWhiteSpace(content))
+        {
+            return;
+        }
+        
+        try
+        {
+            isGeneratingAudio = true;
+            errorMessage = string.Empty;
+            
+            // Hide previous audio player if exists
+            await JSRuntime.InvokeVoidAsync("hideAudioPlayer", audioElementId);
+            audioAvailable = false;
+            
+            StateHasChanged();
+            
+            // Create the request with blog content
+            var request = new GenerateSpeechRequest
+            {
+                Content = content,
+                Voice = "alloy" // Could be made configurable in a future enhancement
+            };
+            
+            // Call the OpenAI service to generate speech
+            var audioData = await SpeechGenerator.ExecuteAsync(request);
+            
+            if (audioData != null && audioData.Length > 0)
+            {
+                // Create or update audio element via JS interop
+                await JSRuntime.InvokeVoidAsync("createOrUpdateAudioPlayer", 
+                    audioElementId, 
+                    Convert.ToBase64String(audioData));
+                
+                audioAvailable = true;
+            }
+            else
+            {
+                errorMessage = "Failed to generate audio. Please try again.";
+            }
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error generating audio: {ex.Message}";
+            audioAvailable = false;
+        }
+        finally
+        {
+            isGeneratingAudio = false;
+            StateHasChanged();
+        }
+    }
+}
